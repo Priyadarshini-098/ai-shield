@@ -245,6 +245,48 @@ footer {
   .metrics {
     grid-template-columns: 1fr;
   }
+  
+/* AI Shield analysis report improvements */
+#findings-list li {
+  padding: 12px 14px;
+  margin: 12px 0;
+  background: #0c1324;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+#findings-list li strong {
+  color: var(--accent);
+}
+
+#findings-list li p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+#result-summary {
+  color: var(--muted);
+}
+
+#risk-level {
+  color: var(--accent);
+}
+
+#recommendation {
+  line-height: 1.7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 
   .controls {
     justify-content: flex-start;
