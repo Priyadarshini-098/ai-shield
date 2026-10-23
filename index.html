@@ -72,7 +72,7 @@
         <div class="btn-row">
               <button id="scan-btn" class="btn primary" type="button" disabled>Loading engine...</button>
               <button id="clear-prompt-btn" class="btn clear" type="button">✕ Clear Prompt</button>
-              <input id="file-input" type="file" accept=".txt,.md,.csv,.json,.log,.html,.xml,text/plain" hidden>
+              <input id="file-input" type="file" accept=".txt,.md,.csv,.json,.log,.html,.xml,.pdf,.docx,text/plain,application/pdf" hidden>
               <button id="upload-btn" class="btn" type="button">📄 Upload Document</button>
               <span id="file-name" class="file-name"></span>
         </div>
@@ -98,6 +98,8 @@
 
   <noscript><p style="padding:16px;color:#fecaca">This dashboard needs JavaScript to run the Python detection engine.</p></noscript>
   <!-- Pyodide: runs detector.py, protection.py and pipeline.py inside the browser (no API) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
   <script src="script.js"></script>
 </body>
