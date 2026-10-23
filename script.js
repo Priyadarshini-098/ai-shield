@@ -522,6 +522,16 @@ async function init() {
   const scanButton = $("scan-btn");
   if (scanButton) scanButton.addEventListener("click", scan);
 
+  const clearPromptButton = $("clear-prompt-btn");
+  if (clearPromptButton) {
+     clearPromptButton.addEventListener("click", () => {
+      const promptBox = $("prompt-box");
+      if (!promptBox) return;
+      promptBox.value = "";
+      promptBox.focus();
+     });
+}
+
   render();
   loadBenchmarks();
 
