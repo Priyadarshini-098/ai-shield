@@ -69,7 +69,10 @@
       <div class="console">
         <label class="field-label" for="prompt-box">Paste a prompt or document to scan</label>
         <textarea id="prompt-box" rows="7" placeholder="Type or paste text here..."></textarea>
-        <button id="scan-btn" class="btn primary" type="button" disabled>Loading engine...</button>
+        <div class="btn-row">
+              <button id="scan-btn" class="btn primary" type="button" disabled>Loading engine...</button>
+              <button id="clear-prompt-btn" class="btn clear" type="button">✕ Clear Prompt</button>
+        </div>
       </div>
 
       <div id="notice"></div>
