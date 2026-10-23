@@ -1,0 +1,7 @@
+# Needed for the dashboards (web_demo.py, pipeline_dashboard.py)
+streamlit
+pandas
+
+# Optional, only if you use AI-assisted detection:
+# ollama
+# anthropic
