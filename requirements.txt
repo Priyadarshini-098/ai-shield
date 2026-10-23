@@ -5,3 +5,7 @@ pandas
 # Optional, only if you use AI-assisted detection:
 # ollama
 # anthropic
+
+flask
+flask-cors
+gunicorn
