@@ -3,15 +3,22 @@
    ============================================================ */
 
 // ------------------------------------------------------------
-// PIPELINE
-// Python's pipeline.py cannot run inside a browser, so this is the
-// SAME MOCK that app.py falls back to. It is NOT real detection.
-// To use your real pipeline, host it as an API and replace the body
-// of runShield() with a fetch() call (see the note at the bottom).
-// ------------------------------------------------------------
-const USING_MOCK = true;
+// SETTINGS: where your Python files live, relative to this page.
+// The page looks for each file in these folders, in order:
+//   ""   = same folder as index.html (e.g. /my-version/)
+//   "../" = one folder up (the repo root)
+const SEARCH_FOLDERS = ["", "../", "./"];
+const PY_FILES = {
+  "detector.py":   ["detector.py", "detector__1_.py"],   // saved under the name Python imports
+  "protection.py": ["protection.py"],
+  "pipeline.py":   ["pipeline.py"]
+};
 
-function runShield(text) {
+// ------------------------------------------------------------
+// MOCK: only used as a fallback if your Python fails to load.
+// It is NOT real detection.
+// ------------------------------------------------------------
+function mockShield(text) {
   const index = text.toLowerCase().indexOf("ignore");
   if (index === -1) {
     return {
@@ -42,6 +49,96 @@ function runShield(text) {
       preview: text, note: "Held for manual review."
     }
   };
+}
+
+// ------------------------------------------------------------
+// REAL PIPELINE: runs your pipeline.py / detector.py / protection.py
+// in the browser using Pyodide (Python compiled to WebAssembly).
+// ------------------------------------------------------------
+let usingMock = false;
+let pyScan = null;
+let pyReady = null;
+
+function setEngine(kind, message) {
+  const el = $("engine-status");
+  if (!el) return;
+  el.className = "alert " + kind;
+  el.textContent = message;
+  el.hidden = false;
+}
+
+async function loadPython() {
+  if (typeof loadPyodide !== "function") {
+    throw new Error("The Pyodide script could not be loaded (check your internet connection).");
+  }
+  const pyodide = await loadPyodide();
+
+  for (const [target, candidates] of Object.entries(PY_FILES)) {
+    let code = null;
+    for (const folder of SEARCH_FOLDERS) {
+      for (const candidate of candidates) {
+        try {
+          const response = await fetch(folder + candidate, { cache: "no-store" });
+          if (!response.ok) continue;
+          const body = await response.text();
+          if (body.trim().startsWith("<")) continue;      // got an HTML error page, not Python
+          code = body;
+          break;
+        } catch (e) { /* try the next location */ }
+      }
+      if (code !== null) break;
+    }
+    if (code === null) {
+      throw new Error(`Could not find ${target}. Put it in the same folder as index.html (or the repo root).`);
+    }
+    pyodide.FS.writeFile("/home/pyodide/" + target, code);
+  }
+
+  // Import pipeline.py and expose one function that returns JSON text.
+  await pyodide.runPythonAsync(`
+import sys, json, importlib
+if "/home/pyodide" not in sys.path:
+    sys.path.insert(0, "/home/pyodide")
+importlib.invalidate_caches()
+from pipeline import run_shield as _run_shield
+
+def _u16(text, i):
+    # Python counts characters, JavaScript counts UTF-16 units. Convert so emoji don't shift flags.
+    return len(text[:i].encode("utf-16-le", "surrogatepass")) // 2
+
+def scan_json(text):
+    result = _run_shield(text)
+    try:
+        for flag in result["analysis"].get("flags", []):
+            flag["start"] = _u16(text, flag["start"])
+            flag["end"] = _u16(text, flag["end"])
+    except Exception:
+        pass
+    return json.dumps(result, default=str)
+`);
+  return pyodide.globals.get("scan_json");
+}
+
+async function startPython() {
+  setEngine("info", "⏳ Loading the Python engine (first load takes a few seconds)...");
+  pyReady = loadPython()
+    .then((fn) => {
+      pyScan = fn;
+      usingMock = false;
+      setEngine("success", "✅ Running your real pipeline.py (detector + protection).");
+    })
+    .catch((error) => {
+      console.error(error);
+      usingMock = true;
+      setEngine("warn", `⚠️ Could not load your Python pipeline, so the MOCK is being used. Results are fake. Reason: ${error.message}`);
+    });
+  return pyReady;
+}
+
+async function runShield(text) {
+  await pyReady;
+  if (usingMock || !pyScan) return mockShield(text);
+  return JSON.parse(pyScan(text));
 }
 
 // ------------------------------------------------------------
@@ -135,7 +232,7 @@ function recordScan(result, text) {
 // ------------------------------------------------------------
 // ACTIONS
 // ------------------------------------------------------------
-function scan() {
+async function scan() {
   const text = $("prompt-box").value;
   state.lastError = null;
   state.warning = null;
@@ -148,7 +245,7 @@ function scan() {
 
   let result;
   try {
-    result = runShield(text);
+    result = await runShield(text);
   } catch (error) {
     state.lastResult = null;
     state.lastError = `The scan failed. Please review this prompt manually. (${error.message})`;
@@ -315,9 +412,18 @@ async function loadBenchmarks() {
 
   let data;
   try {
-    const response = await fetch("results.json", { cache: "no-store" });
-    if (!response.ok) { info("Benchmark results not generated yet."); return; }
-    const raw = await response.text();
+    let raw = null;
+    for (const folder of SEARCH_FOLDERS) {
+      try {
+        const response = await fetch(folder + "results.json", { cache: "no-store" });
+        if (!response.ok) continue;
+        const body = await response.text();
+        if (body.trim().startsWith("<")) continue;
+        raw = body;
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (raw === null) { info("Benchmark results not generated yet."); return; }
     data = JSON.parse(raw.replace(/^\uFEFF/, ""));   // tolerate a BOM, like utf-8-sig
   } catch (e) {
     info("results.json exists but could not be read (malformed file).");
@@ -376,28 +482,11 @@ function init() {
     examplesBox.appendChild(btn);
   });
 
-  $("mock-warning").hidden = !USING_MOCK;
   $("scan-btn").addEventListener("click", scan);
 
   render();
-  loadBenchmarks();
+  loadBenchmarks().catch(console.error);
+  startPython().catch(console.error);
 }
 
 document.addEventListener("DOMContentLoaded", init);
-
-/* ------------------------------------------------------------
-   NOTE: connecting your real pipeline
-   Once pipeline.py is hosted as an API (Render, Hugging Face Space, etc.),
-   change USING_MOCK to false, make runShield async, and use:
-
-     async function runShield(text) {
-       const r = await fetch("https://YOUR-API-URL/scan", {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ text })
-       });
-       return await r.json();   // must return { analysis: {...}, gate: {...} }
-     }
-
-   Then add `await` in scan() (make scan async) where runShield is called.
-   ------------------------------------------------------------ */
