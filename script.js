@@ -551,3 +551,46 @@ async function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+// ------------------------------------------------------------
+// DOCUMENT UPLOAD: reads a text file into the prompt box.
+// The scan logic is unchanged; it scans whatever is in the box.
+// ------------------------------------------------------------
+document.addEventListener("DOMContentLoaded", () => {
+  const input = $("file-input");
+  const box = $("prompt-box");
+  const label = $("file-name");
+  const MAX_FILE_BYTES = 1024 * 1024; // 1 MB safety cap
+
+  async function loadFile(file) {
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      label.textContent = `✕ ${file.name} is too large (max 1 MB).`;
+      return;
+    }
+    const text = await file.text();
+    // Binary files (PDF, images, Word) decode to garbage; refuse them.
+    if (text.includes("\u0000") || text.includes("\uFFFD")) {
+      label.textContent = `✕ ${file.name} is not a plain-text file.`;
+      return;
+    }
+    box.value = text;
+    label.textContent = `📄 ${file.name} · ${text.length.toLocaleString()} characters`;
+    box.focus();
+  }
+
+  $("upload-btn").addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { loadFile(input.files[0]); input.value = ""; });
+
+  // Drag a file onto the text box
+  box.addEventListener("dragover", (e) => { e.preventDefault(); box.classList.add("drag-over"); });
+  box.addEventListener("dragleave", () => box.classList.remove("drag-over"));
+  box.addEventListener("drop", (e) => {
+    e.preventDefault();
+    box.classList.remove("drag-over");
+    loadFile(e.dataTransfer.files[0]);
+  });
+
+  // Reset the file label when the prompt is cleared
+  const clearBtn = $("clear-prompt-btn");
+  if (clearBtn) clearBtn.addEventListener("click", () => { label.textContent = ""; });
+});
