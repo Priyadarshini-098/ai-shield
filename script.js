@@ -561,21 +561,65 @@ document.addEventListener("DOMContentLoaded", () => {
   const label = $("file-name");
   const MAX_FILE_BYTES = 1024 * 1024; // 1 MB safety cap
 
+    async function readPdf(file) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    let out = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const content = await (await pdf.getPage(p)).getTextContent();
+      out += content.items.map((i) => i.str).join(" ") + "\n\n";
+    }
+    return out.trim();
+  }
+
+  async function readDocx(file) {
+    const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+    return result.value.trim();
+  }
+
   async function loadFile(file) {
     if (!file) return;
-    if (file.size > MAX_FILE_BYTES) {
-      label.textContent = `✕ ${file.name} is too large (max 1 MB).`;
+    const name = file.name.toLowerCase();
+    const isPdf = name.endsWith(".pdf");
+    const isDocx = name.endsWith(".docx");
+
+    if (file.size > (isPdf || isDocx ? 10 : 1) * 1024 * 1024) {
+      label.textContent = `✕ ${file.name} is too large.`;
       return;
     }
-    const text = await file.text();
-    // Binary files (PDF, images, Word) decode to garbage; refuse them.
-    if (text.includes("\u0000") || text.includes("\uFFFD")) {
-      label.textContent = `✕ ${file.name} is not a plain-text file.`;
+    if (name.endsWith(".doc")) {
+      label.textContent = "✕ Old .doc files are not supported. Save it as .docx and try again.";
       return;
     }
-    box.value = text;
-    label.textContent = `📄 ${file.name} · ${text.length.toLocaleString()} characters`;
-    box.focus();
+
+    label.textContent = `⏳ Reading ${file.name}...`;
+    try {
+      let text;
+      if (isPdf) {
+        if (typeof pdfjsLib === "undefined") throw new Error("PDF reader did not load.");
+        text = await readPdf(file);
+      } else if (isDocx) {
+        if (typeof mammoth === "undefined") throw new Error("Word reader did not load.");
+        text = await readDocx(file);
+      } else {
+        text = await file.text();
+        if (text.includes("\u0000") || text.includes("\uFFFD")) {
+          label.textContent = `✕ ${file.name} is not a plain-text file.`;
+          return;
+        }
+      }
+      if (!text) {
+        label.textContent = `✕ No readable text in ${file.name} (it may be a scanned image).`;
+        return;
+      }
+      box.value = text;
+      label.textContent = `📄 ${file.name} · ${text.length.toLocaleString()} characters`;
+      box.focus();
+    } catch (error) {
+      console.error("Could not read file:", error);
+      label.textContent = `✕ Could not read ${file.name}. (${error.message})`;
+    }
   }
 
   $("upload-btn").addEventListener("click", () => input.click());
