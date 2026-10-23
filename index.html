@@ -6,15 +6,26 @@
   <title>AI Shield</title>
   <meta name="description" content="AI Shield: prompt injection detection and review, running in your browser.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+  <link rel="preload" href="fonts/chakra-petch-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- decorative background layers (visual only) -->
+  <div class="fx fx-aurora" aria-hidden="true"></div>
+  <div class="fx fx-grid" aria-hidden="true"></div>
+  <div class="fx fx-scan" aria-hidden="true"></div>
+
   <div class="app">
 
     <!-- ============ SIDEBAR ============ -->
     <aside class="sidebar">
-      <h3>🛡️ AI Shield</h3>
-      <p class="caption">Prompt injection detection &amp; review</p>
+      <div class="brand">
+        <span class="brand-logo" aria-hidden="true"></span>
+        <div>
+          <h3>AI Shield</h3>
+          <p class="caption">Prompt injection detection &amp; review</p>
+        </div>
+      </div>
 
       <p class="side-heading">Try an example</p>
       <div id="examples" class="examples"></div>
@@ -45,15 +56,21 @@
 
     <!-- ============ MAIN ============ -->
     <main class="main">
+      <div class="ticker" aria-hidden="true"><div class="ticker-track">
+        <span>● SHIELD ONLINE</span><span>INJECTION RADAR ARMED</span><span>LOCAL ENGINE · ZERO UPLOAD</span><span>REVIEW GATE ACTIVE</span>
+        <span>● SHIELD ONLINE</span><span>INJECTION RADAR ARMED</span><span>LOCAL ENGINE · ZERO UPLOAD</span><span>REVIEW GATE ACTIVE</span>
+      </div></div>
+
       <p class="page-title">Security <span>Dashboard</span></p>
       <p class="page-sub">Prompt Injection Detection &amp; Review</p>
 
       <div id="engine-status" class="alert info" hidden></div>
 
-      <label class="field-label" for="prompt-box">Paste a prompt or document to scan</label>
-      <textarea id="prompt-box" rows="7" placeholder="Type or paste text here..."></textarea>
-
-      <button id="scan-btn" class="btn primary" type="button" disabled>Loading engine...</button>
+      <div class="console">
+        <label class="field-label" for="prompt-box">Paste a prompt or document to scan</label>
+        <textarea id="prompt-box" rows="7" placeholder="Type or paste text here..."></textarea>
+        <button id="scan-btn" class="btn primary" type="button" disabled>Loading engine...</button>
+      </div>
 
       <div id="notice"></div>
 
