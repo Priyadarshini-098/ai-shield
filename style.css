@@ -135,6 +135,9 @@ textarea::placeholder { color: #5b7390; }
 .btn:focus-visible, summary:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
 .btn.primary { background: linear-gradient(90deg, #0891b2, #14b8a6); border: none; color: #fff; margin-top: 12px; }
 .btn.block { width: 100%; text-align: center; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:disabled:hover { border-color: #1c3250; color: #cfe8ff; }
+.btn.primary:disabled:hover { color: #fff; }
 
 /* ---------- Alerts ---------- */
 .alert { border-radius: 14px; padding: 14px 16px; margin: 12px 0; border: 1px solid; }
@@ -142,6 +145,7 @@ textarea::placeholder { color: #5b7390; }
 .alert.warn    { background: #2a2210; border-color: #8a6a14; color: #fde68a; }
 .alert.error   { background: #2d1519; border-color: #8a2f3a; color: #fecaca; }
 .alert.info    { background: #0c2236; border-color: #1c4a6e; color: #bae6fd; }
+.alert.small { font-size: 0.85rem; padding: 10px 12px; }
 .alert[hidden] { display: none; }
 
 /* ---------- Expanders ---------- */
@@ -158,6 +162,9 @@ pre.code {
   white-space: pre-wrap; word-break: break-word;
   font-family: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.88rem; color: #e6edf3;
+}
+pre.preview mark {
+  background: #5a1328; color: #ff9bb0; border-radius: 4px; padding: 1px 3px;
 }
 code.inline {
   background: #0d1628; border-radius: 6px; padding: 1px 6px;
