@@ -504,9 +504,102 @@ class ProtectionLayer:
         if decision.forward_to_model:
             return decision, model_fn(decision.safe_text)
         return decision, None
+   
+def review_gate(text, analysis) -> dict:
+    """Apply the review gate and preserve the original text."""
+    low_note = (
+        "No suspicious patterns found. "
+        "This does not prove the content is safe."
+    )
+
+    try:
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+
+        if not isinstance(analysis, dict):
+            analysis = {}
+
+        level = analysis.get("risk_level")
+        level = level.lower() if isinstance(level, str) else None
+
+        flags = analysis.get("flags", [])
+        spans = []
+
+        if isinstance(flags, list):
+            for flag in flags:
+                if not isinstance(flag, dict):
+                    continue
+
+                start = flag.get("start")
+                end = flag.get("end")
+                phrase = flag.get("text")
+
+                if (
+                    isinstance(start, int)
+                    and not isinstance(start, bool)
+                    and isinstance(end, int)
+                    and not isinstance(end, bool)
+                    and 0 <= start < end <= len(text)
+                    and (
+                        not isinstance(phrase, str)
+                        or text[start:end] == phrase
+                    )
+                ):
+                    spans.append((start, end))
+                elif isinstance(phrase, str) and phrase:
+                    pos = text.find(phrase)
+                    if pos >= 0:
+                        spans.append((pos, pos + len(phrase)))
+
+        spans.sort()
+        merged = []
+
+        for start, end in spans:
+            if merged and start < merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        parts = []
+        pos = 0
+
+        for start, end in merged:
+            parts.append(text[pos:start])
+            parts.append(f"[[FLAGGED: {text[start:end]}]]")
+            pos = end
+
+        parts.append(text[pos:])
+        preview = "".join(parts)
+
+        if level == "low":
+            status = "allowed"
+            note = low_note
+        elif level in ("medium", "high"):
+            status = "held_for_review"
+            note = f"Held because risk level is {level}."
+        else:
+            status = "held_for_review"
+            note = "Risk level missing or unknown. Please review manually."
+
+        return {
+            "status": status,
+            "original": text,
+            "preview": preview,
+            "note": note,
+        }
+
+    except Exception:
+        return {
+            "status": "held_for_review",
+            "original": text,
+            "preview": text if isinstance(text, str) else str(text),
+            "note": "Review gate error. Please review manually.",
+        }
 
 
-if __name__ == "__main__":
+
+
+if __name__ == "__main__":      
     layer = ProtectionLayer()
     demo = [
         ("What is the capital of France?", SourceType.USER),
