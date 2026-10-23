@@ -170,6 +170,11 @@ textarea::placeholder{color:#47627f}
   transform:scale(1.04);
 }
 
+/* ---------- Document upload ---------- */
+.file-name{font:.8rem var(--mono);color:var(--gr);word-break:break-all}
+.file-name:empty{display:none}
+textarea.drag-over{border-color:var(--pk);box-shadow:0 0 0 3px rgba(244,114,182,.25),0 0 30px rgba(244,114,182,.35)}
+
 @media(max-width:560px){
   .btn-row .btn{width:100%}
 }
