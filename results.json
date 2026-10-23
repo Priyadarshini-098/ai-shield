@@ -1,0 +1,29 @@
+{
+  "baseline": {
+    "TP": 4,
+    "FN": 6,
+    "FP": 1,
+    "TN": 5,
+    "detection_rate": 0.4,
+    "false_positive_rate": 0.17,
+    "precision": 0.8
+  },
+  "ai_shield_detector": {
+    "TP": 5,
+    "FN": 5,
+    "FP": 0,
+    "TN": 6,
+    "detection_rate": 0.5,
+    "false_positive_rate": 0.0,
+    "precision": 1.0
+  },
+  "full_workflow": {
+    "TP": 5,
+    "FN": 5,
+    "FP": 0,
+    "TN": 6,
+    "detection_rate": 0.5,
+    "false_positive_rate": 0.0,
+    "precision": 1.0
+  }
+}
