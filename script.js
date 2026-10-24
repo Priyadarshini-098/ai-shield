@@ -15,6 +15,20 @@ const PYTHON_FILES = [
 const MAX_CHARS = 20000;
 const SCAN_LABEL = "🔍 Scan Prompt";
 
+// Where the page looks for Ollama. Default = Ollama on the SAME computer as the browser.
+// To use Ollama on another computer (through a tunnel), open the site with ?ollama=https://your-tunnel-address
+const DEFAULT_OLLAMA_BASE = "http://localhost:11434";
+
+function getOllamaBase() {
+  const fromLink = new URLSearchParams(location.search).get("ollama");
+  const url = (fromLink || DEFAULT_OLLAMA_BASE).trim();
+  return /^https?:\/\//i.test(url) ? url.replace(/\/+$/, "") : DEFAULT_OLLAMA_BASE;
+}
+
+const OLLAMA_BASE = getOllamaBase();
+const OLLAMA_IS_LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(OLLAMA_BASE);
+let pyodideRef = null;
+
 // Tiny bridge: JS calls run_shield_json(text) and gets the contract
 // dictionary back as JSON text. The user's text is passed as an argument,
 // never pasted into Python source code.
@@ -61,11 +75,15 @@ urllib.request.urlopen = _browser_urlopen if ALLOW_LOCAL_AI else _no_network
 _original_classify = local_classifier.classify_text
 _flags = []
 
+_state = {"error": None}
+
 def _browser_classify(text):
     _flags.clear()
+    _state["error"] = None
     try:
         return _original_classify(text)
-    except Exception:
+    except Exception as exc:
+        _state["error"] = str(exc.__cause__ or exc)
         r = detector.analyze(text)
         _flags.extend(r.get("flags", []))
         return {"risk_level": r["risk_level"], "score": r["score"],
@@ -79,6 +97,9 @@ def run_shield_json(text):
     r = cp.run_combined_shield(text)
     status = r.get("status", "held_for_review")
     analysis = dict(r.get("analysis") or {})
+    if _state["error"] and str((r.get("local_ai") or {}).get("method", "")) == "browser_rules":
+        r["browser_ai_error"] = _state["error"]
+        analysis["explanation"] = "[Ollama was not reached, so lighter browser rules were used] " + str(analysis.get("explanation", ""))
     rb = r.get("rule_based") or {}
     reasons = rb.get("reasons") or []
     if reasons:
@@ -119,6 +140,11 @@ def run_shield_json(text):
     if not analysis["flags"] and analysis.get("risk_level") in ("medium", "high") and str(ai.get("method", "")) in ("local_ai", "local_rules"):
         analysis["flags"] = [{"start": 0, "end": len(text), "text": text,
                               "reason": str(ai.get("explanation", "")), "category": "local_ai"}]
+    # combined_pipeline.py labels every rule-FLAG as "medium", even when its own AI result says "high"
+    # (and the score shows the higher number). Show the higher of the two levels so label and score agree.
+    # The hold-for-review decision is not changed.
+    if ai.get("risk_level") in _RANK and _RANK[ai["risk_level"]] > _RANK.get(str(analysis.get("risk_level")), 0):
+        analysis["risk_level"] = ai["risk_level"]
     r["analysis"] = analysis
     r["gate"] = {
         "status": "allowed" if status == "allowed" else "held_for_review",
@@ -289,6 +315,9 @@ async function loadEngine() {
   }
 
   await pyodide.runPythonAsync(PYTHON_GLUE);
+  pyodide.globals.set("OLLAMA_BASE", OLLAMA_BASE);
+  pyodide.runPython("import local_classifier\nlocal_classifier.OLLAMA_URL = OLLAMA_BASE + '/api/generate'");
+  pyodideRef = pyodide;
   shieldFn = pyodide.globals.get("run_shield_json");
 }
 
@@ -455,7 +484,14 @@ async function scan() {
     state.lastResult = result;
     state.lastText = text;
     recordScan(result, text);
-    setEngine("success", "Python engine ready. Scan completed in your browser.");
+    const usedMethod = result.local_ai && result.local_ai.method;
+    if (usedMethod === "browser_rules") {
+      setEngine("warn",
+        "Ollama was NOT reached, so the lighter browser rules were used. Results can differ from running " +
+        "combined_pipeline.py on your PC. Reason: " + (result.browser_ai_error || "unknown") + ".");
+    } else {
+      setEngine("success", "Scan used your local AI (Ollama) through the real pipeline.");
+    }
   } catch (error) {
     console.error("AI Shield scan failed:", error);
     state.lastResult = null;
@@ -727,6 +763,33 @@ async function loadBenchmarks() {
 // ------------------------------------------------------------
 // INIT
 // ------------------------------------------------------------
+// Tells you right away whether the page can reach Ollama (so you know BEFORE scanning).
+async function checkOllama() {
+  const note = document.querySelector(".alert.success.small");
+  if (note) {
+    note.textContent = OLLAMA_IS_LOCAL
+      ? "Runs in your browser. Prompts only go to Ollama on this computer."
+      : "Prompts are sent to the Ollama server this link points to (" + new URL(OLLAMA_BASE).host + ").";
+  }
+  const where = OLLAMA_IS_LOCAL ? "Ollama on this computer" : "Ollama at " + new URL(OLLAMA_BASE).host;
+  try {
+    const response = await fetch(OLLAMA_BASE + "/api/tags");
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const data = await response.json();
+    const names = (data.models || []).map((m) => m.name || m.model || "");
+    const wanted = String(pyodideRef.runPython("local_classifier.MODEL_NAME"));
+    if (names.some((n) => n === wanted || n.split(":")[0] === wanted)) {
+      setEngine("success", "Python engine ready. " + where + " is connected with model " + wanted + ". Scans use your real AI.");
+    } else {
+      setEngine("warn", "Connected to " + where + ", but the model " + wanted +
+        " is not installed there. Run: ollama pull " + wanted);
+    }
+  } catch (error) {
+    setEngine("warn", "Python engine ready, but " + where + " is NOT reachable (" + error.message +
+      "). Scans will use the lighter browser rules until Ollama is running and allowed.");
+  }
+}
+
 async function init() {
   const examplesBox = $("examples");
   if (examplesBox) {
@@ -758,7 +821,8 @@ async function init() {
   try {
     await loadEngine();
     setScanButton(true, SCAN_LABEL);
-    setEngine("success", "Python engine ready. Your prompt is scanned in this browser and is not sent anywhere.");
+    setEngine("info", "Python engine ready. Checking for Ollama...");
+    checkOllama();
   } catch (error) {
     console.error("Could not start the Python engine:", error);
     setScanButton(false, "Engine unavailable");
