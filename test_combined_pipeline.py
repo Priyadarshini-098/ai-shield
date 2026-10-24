@@ -1,8 +1,10 @@
 
 import unittest
+import json
+import subprocess
 from unittest.mock import patch
 
-from combined_pipeline import run_combined_shield
+from combined_pipeline import run_combined_shield, run_isolated_detector
 
 
 class TestCombinedPipeline(unittest.TestCase):
@@ -93,6 +95,92 @@ class TestCombinedPipeline(unittest.TestCase):
             result = run_combined_shield(text)
 
         self.assertEqual(result["original"], text)
+
+    def test_high_risk_detector_result_holds_content_for_review(self):
+        text = "Please review this ordinary document."
+
+        with (
+            patch(
+                "combined_pipeline.classify_text",
+                return_value={
+                    "risk_level": "low",
+                    "score": 0.1,
+                    "explanation": "Low risk",
+                    "method": "test",
+                },
+            ),
+            patch(
+                "combined_pipeline.run_isolated_detector",
+                return_value={
+                    "risk_level": "high",
+                    "score": 0.95,
+                    "explanation": "High risk detected",
+                    "method": "rules",
+                    "flags": [],
+                },
+            ),
+        ):
+            result = run_combined_shield(text)
+
+        self.assertEqual(result["status"], "held_for_review")
+        self.assertEqual(result["analysis"]["risk_level"], "high")
+        self.assertEqual(result["original"], text)
+
+    def test_detector_timeout_holds_content_for_review(self):
+        text = "Please review this document."
+
+        with (
+            patch(
+                "combined_pipeline.classify_text",
+                return_value={
+                    "risk_level": "low",
+                    "score": 0.1,
+                    "explanation": "Low risk",
+                    "method": "test",
+                },
+            ),
+            patch(
+                "combined_pipeline.run_isolated_detector",
+                side_effect=TimeoutError("Simulated timeout"),
+            ),
+        ):
+            result = run_combined_shield(text)
+
+        self.assertEqual(result["status"], "held_for_review")
+        self.assertIn("error", result["detector"])
+        self.assertIn("TimeoutError", result["detector"]["error"])
+        self.assertEqual(result["original"], text)
+
+    def test_detector_rejects_invalid_character_spans(self):
+        text = "Hello world"
+
+        invalid_result = {
+            "risk_level": "high",
+            "score": 0.9,
+            "flags": [
+                {
+                    "start": 0,
+                    "end": 5,
+                    "text": "wrong",
+                    "reason": "Test",
+                    "category": "test",
+                }
+            ],
+        }
+
+        completed = subprocess.CompletedProcess(
+            args=["test-worker"],
+            returncode=0,
+            stdout=json.dumps(invalid_result),
+            stderr="",
+        )
+
+        with patch(
+            "combined_pipeline.subprocess.run",
+            return_value=completed,
+        ):
+            with self.assertRaises(ValueError):
+                run_isolated_detector(text)
 
 
 if __name__ == "__main__":
