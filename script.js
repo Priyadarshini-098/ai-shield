@@ -21,21 +21,15 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 const PYTHON_GLUE = `
 import json
 import urllib.request, urllib.error
+import local_classifier, detector
+import combined_pipeline as cp
 
-ALLOW_LOCAL_AI = False   # set True only on your own PC, to let the page try Ollama
+ALLOW_LOCAL_AI = False   # True only on your own PC (lets the page try Ollama; the browser will ask permission)
 
 if not ALLOW_LOCAL_AI:
     def _no_network(*args, **kwargs):
         raise urllib.error.URLError("Local AI is switched off in the browser version")
     urllib.request.urlopen = _no_network
-import re
-import local_classifier, detector
-import combined_pipeline as cp
-
-_SELF_DESTRUCT = re.compile(
-    "(?<![A-Za-z])(?:delete|destroy|erase|wipe|terminate|kill|shut[ ]?down|uninstall)[ ]+"
-    "(?:yourself|your[ ]+(?:own[ ]+)?(?:memory|instructions|data|files|code|safeguards|guardrails))(?![A-Za-z])",
-    re.I)
 
 _original_classify = local_classifier.classify_text
 _flags = []
@@ -46,17 +40,9 @@ def _browser_classify(text):
         return _original_classify(text)
     except Exception:
         r = detector.analyze(text)
-        level, score, why = r["risk_level"], r["score"], r["explanation"]
-        flags = list(r.get("flags", []))
-        m = _SELF_DESTRUCT.search(text)
-        if m:
-            level, score = "high", max(score, 0.8)
-            why = "Orders the AI to delete or disable itself or its safeguards."
-            flags.append({"start": m.start(), "end": m.end(), "text": m.group(),
-                          "reason": why, "category": "other"})
-            flags.sort(key=lambda f: f["start"])
-        _flags.extend(flags)
-        return {"risk_level": level, "score": score, "explanation": why, "method": "browser_rules"}
+        _flags.extend(r.get("flags", []))
+        return {"risk_level": r["risk_level"], "score": r["score"],
+                "explanation": r["explanation"], "method": "browser_rules"}
 
 cp.classify_text = _browser_classify
 
@@ -78,6 +64,7 @@ def run_shield_json(text):
     }
     return json.dumps(r, default=str)
 `;
+
 // ------------------------------------------------------------
 // HELPERS
 // ------------------------------------------------------------
@@ -241,12 +228,6 @@ async function loadEngine() {
   await pyodide.runPythonAsync(PYTHON_GLUE);
   shieldFn = pyodide.globals.get("run_shield_json");
 }
-// ---------- BROWSER RULE CHECK (runs in the page, on top of the pipeline) ----------
-const LEVEL_RANK = { low: 0, medium: 1, high: 2, unknown: 0 };
-const YOUR = "(?:your|you|ur)\\s+(?:(?:own|hidden|secret|internal|full|entire|source|original)\\s+)*";
-const TARGET = "(?:code|prompts?|instructions|rules|config(?:uration)?|settings|programming|training\\s+data|guidelines|memory|weights)";
-const askRx = (verbs) =>
-  new RegExp("\\b(?:" + verbs + ")\\s+(?:me\\s+)?(?:all\\s+)?(?:of\\s+)?" + YOUR + TARGET + "\\b", "i");
 
 // ---------- BROWSER RULE CHECK (typo-tolerant) ----------
 const LEVEL_RANK = { low: 0, medium: 1, high: 2, unknown: 0 };
@@ -363,30 +344,6 @@ function applyBrowserRules(text, result) {
   return result;
 }
 
-
-  for (const rule of BROWSER_RULES) {
-    const m = rule.rx.exec(text);
-    if (!m) continue;
-    const start = Array.from(text.slice(0, m.index)).length; // code points, like Python
-    const end = start + Array.from(m[0]).length;
-    hits.push({ rule, flag: { start, end, text: m[0], reason: rule.reason, category: "other" } });
-  }
-  if (hits.length === 0) return result;
-
-  const top = hits.reduce((a, b) =>
-    LEVEL_RANK[b.rule.level] > LEVEL_RANK[a.rule.level] ||
-    (LEVEL_RANK[b.rule.level] === LEVEL_RANK[a.rule.level] && b.rule.score > a.rule.score) ? b : a).rule;
-
-  const current = String(analysis.risk_level ?? "low").toLowerCase();
-  if (LEVEL_RANK[top.level] > (LEVEL_RANK[current] ?? 0)) analysis.risk_level = top.level;
-  analysis.score = Math.max(parseFloat(analysis.score) || 0, top.score);
-  analysis.explanation = "Browser rule check: " + top.reason + " " + (analysis.explanation ?? "");
-  analysis.flags = [...(Array.isArray(analysis.flags) ? analysis.flags : []), ...hits.map((h) => h.flag)];
-  gate.status = "held_for_review";
-  gate.note = "Held for review. " + (gate.note ?? "");
-  result.browser_rule_check = hits.map((h) => h.rule.reason);
-  return result;
-}
 async function runShield(text) {
   if (!shieldFn) throw new Error("The Python engine is not ready.");
 
@@ -398,7 +355,7 @@ async function runShield(text) {
   if (!isValidResult(result)) {
     throw new Error("The pipeline returned an unexpected result.");
   }
-    return applyBrowserRules(text, result);
+  return applyBrowserRules(text, result);
 }
 
 // ------------------------------------------------------------
@@ -723,16 +680,6 @@ async function init() {
   const scanButton = $("scan-btn");
   if (scanButton) scanButton.addEventListener("click", scan);
 
-  const clearPromptButton = $("clear-prompt-btn");
-  if (clearPromptButton) {
-     clearPromptButton.addEventListener("click", () => {
-      const promptBox = $("prompt-box");
-      if (!promptBox) return;
-      promptBox.value = "";
-      promptBox.focus();
-     });
-}
-
   render();
   loadBenchmarks();
 
@@ -752,17 +699,18 @@ async function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+
 // ------------------------------------------------------------
-// DOCUMENT UPLOAD: reads a text file into the prompt box.
-// The scan logic is unchanged; it scans whatever is in the box.
+// CLEAR PROMPT + DOCUMENT UPLOAD (text, PDF, Word). Scan logic is unchanged.
 // ------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   const input = $("file-input");
   const box = $("prompt-box");
   const label = $("file-name");
-  const MAX_FILE_BYTES = 1024 * 1024; // 1 MB safety cap
+  if (!box) return;
 
-    async function readPdf(file) {
+  async function readPdf(file) {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
@@ -780,7 +728,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadFile(file) {
-    if (!file) return;
+    if (!file || !label) return;
     const name = file.name.toLowerCase();
     const isPdf = name.endsWith(".pdf");
     const isDocx = name.endsWith(".docx");
@@ -823,10 +771,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  $("upload-btn").addEventListener("click", () => input.click());
-  input.addEventListener("change", () => { loadFile(input.files[0]); input.value = ""; });
+  const uploadBtn = $("upload-btn");
+  if (uploadBtn && input) {
+    uploadBtn.addEventListener("click", () => input.click());
+    input.addEventListener("change", () => { loadFile(input.files[0]); input.value = ""; });
+  }
 
-  // Drag a file onto the text box
   box.addEventListener("dragover", (e) => { e.preventDefault(); box.classList.add("drag-over"); });
   box.addEventListener("dragleave", () => box.classList.remove("drag-over"));
   box.addEventListener("drop", (e) => {
@@ -835,7 +785,12 @@ document.addEventListener("DOMContentLoaded", () => {
     loadFile(e.dataTransfer.files[0]);
   });
 
-  // Reset the file label when the prompt is cleared
   const clearBtn = $("clear-prompt-btn");
-  if (clearBtn) clearBtn.addEventListener("click", () => { label.textContent = ""; });
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      box.value = "";
+      if (label) label.textContent = "";
+      box.focus();
+    });
+  }
 });
