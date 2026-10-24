@@ -18,64 +18,131 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 // Tiny bridge: JS calls run_shield_json(text) and gets the contract
 // dictionary back as JSON text. The user's text is passed as an argument,
 // never pasted into Python source code.
+
 const PYTHON_GLUE = `
 import json
 import urllib.request, urllib.error
 
-ALLOW_LOCAL_AI = False   # set True only on your own PC, to let the page try Ollama
+ALLOW_LOCAL_AI = False
 
 if not ALLOW_LOCAL_AI:
     def _no_network(*args, **kwargs):
-        raise urllib.error.URLError("Local AI is switched off in the browser version")
+        raise urllib.error.URLError(
+            "Local AI is switched off in the browser version"
+        )
     urllib.request.urlopen = _no_network
+
 import re
-import local_classifier, detector
+import local_classifier
+import detector
 import combined_pipeline as cp
 
+# Browser compatibility: run the detector in-process.
+# Pyodide cannot launch rules_worker.py using subprocess.
+def _browser_run_isolated_detector(text):
+    result = detector.analyze(text, source="document", analyzer=None)
+    if not isinstance(result, dict):
+        raise RuntimeError("Browser detector returned an invalid result.")
+    return result
+
+cp.run_isolated_detector = _browser_run_isolated_detector
+
 _SELF_DESTRUCT = re.compile(
-    "(?<![A-Za-z])(?:delete|destroy|erase|wipe|terminate|kill|shut[ ]?down|uninstall)[ ]+"
-    "(?:yourself|your[ ]+(?:own[ ]+)?(?:memory|instructions|data|files|code|safeguards|guardrails))(?![A-Za-z])",
-    re.I)
+    r"(?<![A-Za-z])"
+    r"(?:delete|destroy|erase|wipe|terminate|kill|shut[ ]?down|uninstall)[ ]+"
+    r"(?:yourself|your[ ]+(?:own[ ]+)?"
+    r"(?:memory|instructions|data|files|code|safeguards|guardrails))"
+    r"(?![A-Za-z])",
+    re.I
+)
 
 _original_classify = local_classifier.classify_text
 _flags = []
+_browser_error = None
 
 def _browser_classify(text):
+    global _browser_error
+
     _flags.clear()
+    _browser_error = None
+
     try:
         return _original_classify(text)
-    except Exception:
+
+    except Exception as e:
+        _browser_error = repr(e)
+
         r = detector.analyze(text)
-        level, score, why = r["risk_level"], r["score"], r["explanation"]
+        level = r["risk_level"]
+        score = r["score"]
+        why = r["explanation"]
+
         flags = list(r.get("flags", []))
         m = _SELF_DESTRUCT.search(text)
+
         if m:
-            level, score = "high", max(score, 0.8)
-            why = "Orders the AI to delete or disable itself or its safeguards."
-            flags.append({"start": m.start(), "end": m.end(), "text": m.group(),
-                          "reason": why, "category": "other"})
+            level = "high"
+            score = max(score, 0.8)
+            why = (
+                "Orders the AI to delete or disable itself "
+                "or its safeguards."
+            )
+
+            flags.append({
+                "start": m.start(),
+                "end": m.end(),
+                "text": m.group(),
+                "reason": why,
+                "category": "other"
+            })
+
             flags.sort(key=lambda f: f["start"])
+
         _flags.extend(flags)
-        return {"risk_level": level, "score": score, "explanation": why, "method": "browser_rules"}
+
+        return {
+            "risk_level": level,
+            "score": score,
+            "explanation": why,
+            "method": "browser_rules"
+        }
 
 cp.classify_text = _browser_classify
 
 def run_shield_json(text):
     r = cp.run_combined_shield(text)
+
     status = r.get("status", "held_for_review")
     analysis = dict(r.get("analysis") or {})
-    reasons = (r.get("rule_based") or {}).get("reasons") or []
+
+    reasons = (
+        (r.get("rule_based") or {}).get("reasons") or []
+    )
+
     if reasons:
-        analysis["explanation"] = str(analysis.get("explanation", "")) + " Rule-based reasons: " + "; ".join(reasons)
+        existing = str(analysis.get("explanation", ""))
+        analysis["explanation"] = (
+            existing + " Rule-based reasons: " + "; ".join(reasons)
+        ).strip()
+
     analysis["method_full"] = analysis.get("method")
     analysis["method"] = "combined"
     analysis["flags"] = list(_flags)
+
+    # Diagnostic: check whether the original classifier failed.
+    # Remove this field after local testing.
+    analysis["browser_classifier_error"] = _browser_error
+
     r["analysis"] = analysis
     r["gate"] = {
-        "status": "allowed" if status == "allowed" else "held_for_review",
+        "status": (
+            "allowed" if status == "allowed"
+            else "held_for_review"
+        ),
         "note": r.get("note", ""),
-        "preview": r.get("preview", ""),
+        "preview": r.get("preview", "")
     }
+
     return json.dumps(r, default=str)
 `;
 // ------------------------------------------------------------
@@ -256,7 +323,14 @@ const BROWSER_RULES = [
   { rx: /\b(?:delete|destroy|erase|wipe|terminate|kill|shut\s?down|uninstall)\s+(?:yourself|your\s+(?:own\s+)?(?:memory|instructions|data|files|code|safeguards|guardrails))\b/i,
     level: "high", score: 0.9, reason: "Orders the AI to delete or disable itself or its safeguards." },
   { rx: /\b(?:bypass|disable|turn\s+off|override)\s+(?:your\s+|the\s+)?(?:safety|security|safeguards?|guardrails?|filters?|restrictions?)\b/i,
-    level: "high", score: 0.9, reason: "Asks the AI to switch off its safety controls." }
+    level: "high", score: 0.9, reason: "Asks the AI to switch off its safety controls." },
+  {
+    rx: /\bfrom\s+now\s+on\b[\s\S]{0,180}\b(?:i\s+am\s+your\s+developer|developer\s+authority|i\s+authorize\s+you)\b|\b(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|prior|system|safety|governing)\s+instructions\b/i,
+    level: "high",
+    score: 0.9,
+    reason: "Possible attempt to claim developer authority or override governing instructions."
+  }
+
 ];
 
 function applyBrowserRules(text, result) {
