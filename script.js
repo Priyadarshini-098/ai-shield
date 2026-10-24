@@ -119,6 +119,11 @@ def run_shield_json(text):
     if not analysis["flags"] and analysis.get("risk_level") in ("medium", "high") and str(ai.get("method", "")) in ("local_ai", "local_rules"):
         analysis["flags"] = [{"start": 0, "end": len(text), "text": text,
                               "reason": str(ai.get("explanation", "")), "category": "local_ai"}]
+    # combined_pipeline.py labels every rule-FLAG as "medium", even when its own AI result says "high"
+    # (and the score shows the higher number). Show the higher of the two levels so label and score agree.
+    # The hold-for-review decision is not changed.
+    if ai.get("risk_level") in _RANK and _RANK[ai["risk_level"]] > _RANK.get(str(analysis.get("risk_level")), 0):
+        analysis["risk_level"] = ai["risk_level"]
     r["analysis"] = analysis
     r["gate"] = {
         "status": "allowed" if status == "allowed" else "held_for_review",
