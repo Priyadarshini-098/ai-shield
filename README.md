@@ -68,17 +68,6 @@ A person sees a resume. The AI may see an order. AI Shield catches this before t
 
 ---
 
-## Team
-
-| Member | Role | Main files |
-|---|---|---|
-| 1 | Detection and API | `detector.py`, `pipeline.py`, `api.py` |
-| 2 | Dashboard | `app.py`, `index.html`, `script.js`, `style.css` |
-| 3 | Protection and local AI integration | `protection.py`, `member3_ai_shield/` |
-| 4 | Benchmarking and integration | `benchmark.py`, `benchmark_data.json`, `results.json` |
-
----
-
 ## Project structure
 
 ```
