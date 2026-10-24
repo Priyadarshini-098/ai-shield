@@ -24,12 +24,39 @@ import urllib.request, urllib.error
 import local_classifier, detector
 import combined_pipeline as cp
 
-ALLOW_LOCAL_AI = False   # True only on your own PC (lets the page try Ollama; the browser will ask permission)
+ALLOW_LOCAL_AI = True   # True = the page asks YOUR Ollama (on this PC) just like running the file locally. False = never contact Ollama.
 
-if not ALLOW_LOCAL_AI:
-    def _no_network(*args, **kwargs):
-        raise urllib.error.URLError("Local AI is switched off in the browser version")
-    urllib.request.urlopen = _no_network
+class _Resp:
+    def __init__(self, body):
+        self._body = body.encode("utf-8")
+    def read(self):
+        return self._body
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        return False
+
+def _browser_urlopen(request, timeout=None, *args, **kwargs):
+    from js import XMLHttpRequest
+    try:
+        xhr = XMLHttpRequest.new()
+        xhr.open(request.get_method(), request.full_url, False)
+        for name, value in request.header_items():
+            xhr.setRequestHeader(name, value)
+        data = request.data
+        xhr.send(data.decode("utf-8") if data else None)
+        status = int(xhr.status)
+        body = str(xhr.responseText)
+    except Exception as exc:
+        raise urllib.error.URLError("Could not reach Ollama from the browser: " + str(exc))
+    if status != 200:
+        raise urllib.error.URLError("Ollama answered with HTTP " + str(status))
+    return _Resp(body)
+
+def _no_network(*args, **kwargs):
+    raise urllib.error.URLError("Local AI is switched off in the browser version")
+
+urllib.request.urlopen = _browser_urlopen if ALLOW_LOCAL_AI else _no_network
 
 _original_classify = local_classifier.classify_text
 _flags = []
@@ -46,16 +73,52 @@ def _browser_classify(text):
 
 cp.classify_text = _browser_classify
 
+_RANK = {"low": 0, "medium": 1, "high": 2}
+
 def run_shield_json(text):
     r = cp.run_combined_shield(text)
     status = r.get("status", "held_for_review")
     analysis = dict(r.get("analysis") or {})
-    reasons = (r.get("rule_based") or {}).get("reasons") or []
+    rb = r.get("rule_based") or {}
+    reasons = rb.get("reasons") or []
     if reasons:
         analysis["explanation"] = str(analysis.get("explanation", "")) + " Rule-based reasons: " + "; ".join(reasons)
     analysis["method_full"] = analysis.get("method")
     analysis["method"] = "combined"
     analysis["flags"] = list(_flags)
+
+    # The pipeline starts a separate process for the detector, which browsers cannot do, so it
+    # reports an error and holds everything at medium with score 0. When that is the ONLY problem
+    # (rules said ALLOW and the browser AI-substitute worked), run the same detector.py inside
+    # this page and use its answer instead.
+    det = r.get("detector")
+    ai = r.get("local_ai") or {}
+    if (isinstance(det, dict) and det.get("error")
+            and str(rb.get("action", "")).upper() == "ALLOW"
+            and ai.get("risk_level") in _RANK):
+        d = detector.analyze(text)
+        options = [
+            (d["risk_level"], float(d["score"]), d["explanation"]),
+            (ai["risk_level"], float(ai.get("score", 0)), str(ai.get("explanation", ""))),
+        ]
+        level, score, why = max(options, key=lambda o: (_RANK[o[0]], o[1]))
+        seen, flags = set(), []
+        for f in list(d.get("flags", [])) + list(_flags):
+            key = (f.get("start"), f.get("end"))
+            if key not in seen:
+                seen.add(key)
+                flags.append(f)
+        r["detector"] = d
+        analysis["risk_level"] = level
+        analysis["score"] = round(max(score, float(rb.get("score", 0) or 0)), 4)
+        analysis["explanation"] = why + " (The detector ran inside the browser.)"
+        analysis["flags"] = flags
+        status = "allowed" if level == "low" else "held_for_review"
+        r["note"] = ("Detector and rule checks ran in your browser and found nothing suspicious."
+                     if level == "low" else "A check found possible risk. Human review is required.")
+    if not analysis["flags"] and analysis.get("risk_level") in ("medium", "high") and str(ai.get("method", "")) in ("local_ai", "local_rules"):
+        analysis["flags"] = [{"start": 0, "end": len(text), "text": text,
+                              "reason": str(ai.get("explanation", "")), "category": "local_ai"}]
     r["analysis"] = analysis
     r["gate"] = {
         "status": "allowed" if status == "allowed" else "held_for_review",
@@ -317,6 +380,11 @@ function findHits(text) {
 }
 
 function applyBrowserRules(text, result) {
+  // If the team's real classifier answered (Ollama, or its own built-in rules), trust it unchanged.
+  // These extra browser rules are only a safety net for when Ollama could not be reached.
+  const usedMethod = result.local_ai && result.local_ai.method;
+  if (usedMethod === "local_ai" || usedMethod === "local_rules") return result;
+
   const analysis = result.analysis;
   const gate = result.gate;
   const found = findHits(text);
