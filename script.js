@@ -20,10 +20,40 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 // never pasted into Python source code.
 const PYTHON_GLUE = `
 import json
-from combined_pipeline import run_combined_shield
+import re
+import local_classifier, detector
+import combined_pipeline as cp
+
+_SELF_DESTRUCT = re.compile(
+    "(?<![A-Za-z])(?:delete|destroy|erase|wipe|terminate|kill|shut[ ]?down|uninstall)[ ]+"
+    "(?:yourself|your[ ]+(?:own[ ]+)?(?:memory|instructions|data|files|code|safeguards|guardrails))(?![A-Za-z])",
+    re.I)
+
+_original_classify = local_classifier.classify_text
+_flags = []
+
+def _browser_classify(text):
+    _flags.clear()
+    try:
+        return _original_classify(text)
+    except Exception:
+        r = detector.analyze(text)
+        level, score, why = r["risk_level"], r["score"], r["explanation"]
+        flags = list(r.get("flags", []))
+        m = _SELF_DESTRUCT.search(text)
+        if m:
+            level, score = "high", max(score, 0.8)
+            why = "Orders the AI to delete or disable itself or its safeguards."
+            flags.append({"start": m.start(), "end": m.end(), "text": m.group(),
+                          "reason": why, "category": "other"})
+            flags.sort(key=lambda f: f["start"])
+        _flags.extend(flags)
+        return {"risk_level": level, "score": score, "explanation": why, "method": "browser_rules"}
+
+cp.classify_text = _browser_classify
 
 def run_shield_json(text):
-    r = run_combined_shield(text)
+    r = cp.run_combined_shield(text)
     status = r.get("status", "held_for_review")
     analysis = dict(r.get("analysis") or {})
     reasons = (r.get("rule_based") or {}).get("reasons") or []
@@ -31,7 +61,7 @@ def run_shield_json(text):
         analysis["explanation"] = str(analysis.get("explanation", "")) + " Rule-based reasons: " + "; ".join(reasons)
     analysis["method_full"] = analysis.get("method")
     analysis["method"] = "combined"
-    analysis.setdefault("flags", [])
+    analysis["flags"] = list(_flags)
     r["analysis"] = analysis
     r["gate"] = {
         "status": "allowed" if status == "allowed" else "held_for_review",
@@ -40,7 +70,6 @@ def run_shield_json(text):
     }
     return json.dumps(r, default=str)
 `;
-
 // ------------------------------------------------------------
 // HELPERS
 // ------------------------------------------------------------
