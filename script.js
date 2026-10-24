@@ -248,21 +248,121 @@ const TARGET = "(?:code|prompts?|instructions|rules|config(?:uration)?|settings|
 const askRx = (verbs) =>
   new RegExp("\\b(?:" + verbs + ")\\s+(?:me\\s+)?(?:all\\s+)?(?:of\\s+)?" + YOUR + TARGET + "\\b", "i");
 
+// ---------- BROWSER RULE CHECK (typo-tolerant) ----------
+const LEVEL_RANK = { low: 0, medium: 1, high: 2, unknown: 0 };
+
+// Edit distance where swapping two neighbouring letters counts as 1 edit ("revael" -> "reveal").
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Does the word match (or nearly match) one of the words? Short words must match exactly.
+function isWord(token, words) {
+  return words.some((w) => {
+    if (token === w) return true;
+    if (w.length < 6) return false;
+    if (Math.abs(token.length - w.length) > 2) return false;
+    return editDistance(token, w) <= (w.length >= 9 ? 2 : 1);
+  });
+}
+
+const POSSESSIVE = ["your", "you", "ur", "yo", "yur", "yor", "yoru", "yuor", "youre", "ure", "yours", "u", "ya", "yr", "thy"];
+const AI_THINGS = ["code", "codes", "kode", "kodes", "codez", "src", "source", "prompt", "prompts",
+  "instruction", "instructions", "rules", "rule", "config", "configuration", "settings", "programming",
+  "guidelines", "memory", "weights", "system", "secrets", "password", "passwords", "credentials", "keys"];
+const DESTROY = ["delete", "destroy", "erase", "wipe", "terminate", "kill", "uninstall", "shutdown"];
+
+// To cover a new attack, add one line here.
 const BROWSER_RULES = [
-  { rx: askRx("reveal|leak|dump|expose|disclose"), level: "high", score: 0.9,
+  { verbs: ["reveal", "leak", "dump", "expose", "disclose", "extract", "steal", "exfiltrate"],
+    targets: AI_THINGS, possessive: true, level: "high", score: 0.9,
     reason: "Asks the AI to reveal its own code, prompt or instructions." },
-  { rx: askRx("print|output|show|display|share"), level: "medium", score: 0.6,
+  { verbs: ["print", "output", "show", "display", "share", "give", "tell", "send", "provide", "repeat", "copy"],
+    targets: AI_THINGS, possessive: true, level: "medium", score: 0.6,
     reason: "Asks the AI to show its own code, prompt or instructions." },
-  { rx: /\b(?:delete|destroy|erase|wipe|terminate|kill|shut\s?down|uninstall)\s+(?:yourself|your\s+(?:own\s+)?(?:memory|instructions|data|files|code|safeguards|guardrails))\b/i,
-    level: "high", score: 0.9, reason: "Orders the AI to delete or disable itself or its safeguards." },
-  { rx: /\b(?:bypass|disable|turn\s+off|override)\s+(?:your\s+|the\s+)?(?:safety|security|safeguards?|guardrails?|filters?|restrictions?)\b/i,
+  { verbs: DESTROY, targets: ["yourself", "urself", "yourselves", "yoself"], possessive: false,
+    level: "high", score: 0.9, reason: "Orders the AI to delete or disable itself." },
+  { verbs: DESTROY, targets: ["memory", "instructions", "safeguards", "guardrails", "files", "data", "code"],
+    possessive: true, level: "high", score: 0.9, reason: "Orders the AI to delete its own memory, data or safeguards." },
+  { verbs: ["bypass", "disable", "override", "circumvent", "deactivate"],
+    targets: ["safety", "security", "safeguards", "safeguard", "guardrails", "guardrail", "filters", "filter",
+      "restrictions", "restriction", "protections"], possessive: false,
     level: "high", score: 0.9, reason: "Asks the AI to switch off its safety controls." }
 ];
+
+const LEET = { "3": "e", "0": "o", "4": "a", "1": "i", "@": "a", "$": "s" };
+
+function findHits(text) {
+  // Lowercase copy with the same length, so positions still line up with the original text.
+  let norm = "";
+  for (const ch of text) {
+    const lower = LEET[ch] ?? ch.toLowerCase();
+    norm += lower.length === ch.length ? lower : ch;
+  }
+  const tokens = [];
+  const re = /[a-z]+/g;
+  let m;
+  while ((m = re.exec(norm)) !== null) tokens.push({ w: m[0], start: m.index, end: m.index + m[0].length });
+
+  const hits = [];
+  for (const rule of BROWSER_RULES) {
+    let found = false;
+    for (let i = 0; i < tokens.length && !found; i++) {
+      if (!isWord(tokens[i].w, rule.verbs)) continue;
+      let sawPossessive = !rule.possessive;
+      for (let j = i + 1; j < tokens.length && j <= i + 5; j++) {
+        const w = tokens[j].w;
+        if (rule.possessive && POSSESSIVE.includes(w)) { sawPossessive = true; continue; }
+        if (sawPossessive && isWord(w, rule.targets)) {
+          hits.push({ rule, start: tokens[i].start, end: tokens[j].end });
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+  return hits;
+}
 
 function applyBrowserRules(text, result) {
   const analysis = result.analysis;
   const gate = result.gate;
-  const hits = [];
+  const found = findHits(text);
+  if (found.length === 0) return result;
+
+  const hits = found.map((h) => {
+    const start = Array.from(text.slice(0, h.start)).length; // code points, like Python
+    const end = Array.from(text.slice(0, h.end)).length;
+    return { rule: h.rule,
+      flag: { start, end, text: text.slice(h.start, h.end), reason: h.rule.reason, category: "other" } };
+  });
+
+  const top = hits.reduce((a, b) =>
+    LEVEL_RANK[b.rule.level] > LEVEL_RANK[a.rule.level] ||
+    (LEVEL_RANK[b.rule.level] === LEVEL_RANK[a.rule.level] && b.rule.score > a.rule.score) ? b : a).rule;
+
+  const current = String(analysis.risk_level ?? "low").toLowerCase();
+  if (LEVEL_RANK[top.level] > (LEVEL_RANK[current] ?? 0)) analysis.risk_level = top.level;
+  analysis.score = Math.max(parseFloat(analysis.score) || 0, top.score);
+  analysis.explanation = "Browser rule check: " + top.reason + " " + (analysis.explanation ?? "");
+  analysis.flags = [...(Array.isArray(analysis.flags) ? analysis.flags : []), ...hits.map((h) => h.flag)];
+  gate.status = "held_for_review";
+  gate.note = "Held for review. " + (gate.note ?? "");
+  result.browser_rule_check = hits.map((h) => h.rule.reason);
+  return result;
+}
+
 
   for (const rule of BROWSER_RULES) {
     const m = rule.rx.exec(text);
