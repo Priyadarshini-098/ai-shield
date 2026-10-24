@@ -7,7 +7,11 @@
    ============================================================ */
 
 // Python files that must sit next to index.html (same folder on GitHub Pages).
-const PYTHON_FILES = ["detector.py", "protection.py", "pipeline.py"];
+const PYTHON_FILES = [
+  "detector.py", "protection.py", "pipeline.py",
+  "local_adapter.py", "local_classifier.py", "local_pipeline.py",
+  "combined_pipeline.py"
+];
 const MAX_CHARS = 20000;
 const SCAN_LABEL = "🔍 Scan Prompt";
 
@@ -16,7 +20,7 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 // never pasted into Python source code.
 const PYTHON_GLUE = `
 import json
-from pipeline import run_shield
+from combined_pipeline import run_shield
 
 def run_shield_json(text):
     return json.dumps(run_shield(text), default=str)
