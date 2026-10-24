@@ -241,7 +241,52 @@ async function loadEngine() {
   await pyodide.runPythonAsync(PYTHON_GLUE);
   shieldFn = pyodide.globals.get("run_shield_json");
 }
+// ---------- BROWSER RULE CHECK (runs in the page, on top of the pipeline) ----------
+const LEVEL_RANK = { low: 0, medium: 1, high: 2, unknown: 0 };
+const YOUR = "(?:your|you|ur)\\s+(?:(?:own|hidden|secret|internal|full|entire|source|original)\\s+)*";
+const TARGET = "(?:code|prompts?|instructions|rules|config(?:uration)?|settings|programming|training\\s+data|guidelines|memory|weights)";
+const askRx = (verbs) =>
+  new RegExp("\\b(?:" + verbs + ")\\s+(?:me\\s+)?(?:all\\s+)?(?:of\\s+)?" + YOUR + TARGET + "\\b", "i");
 
+const BROWSER_RULES = [
+  { rx: askRx("reveal|leak|dump|expose|disclose"), level: "high", score: 0.9,
+    reason: "Asks the AI to reveal its own code, prompt or instructions." },
+  { rx: askRx("print|output|show|display|share"), level: "medium", score: 0.6,
+    reason: "Asks the AI to show its own code, prompt or instructions." },
+  { rx: /\b(?:delete|destroy|erase|wipe|terminate|kill|shut\s?down|uninstall)\s+(?:yourself|your\s+(?:own\s+)?(?:memory|instructions|data|files|code|safeguards|guardrails))\b/i,
+    level: "high", score: 0.9, reason: "Orders the AI to delete or disable itself or its safeguards." },
+  { rx: /\b(?:bypass|disable|turn\s+off|override)\s+(?:your\s+|the\s+)?(?:safety|security|safeguards?|guardrails?|filters?|restrictions?)\b/i,
+    level: "high", score: 0.9, reason: "Asks the AI to switch off its safety controls." }
+];
+
+function applyBrowserRules(text, result) {
+  const analysis = result.analysis;
+  const gate = result.gate;
+  const hits = [];
+
+  for (const rule of BROWSER_RULES) {
+    const m = rule.rx.exec(text);
+    if (!m) continue;
+    const start = Array.from(text.slice(0, m.index)).length; // code points, like Python
+    const end = start + Array.from(m[0]).length;
+    hits.push({ rule, flag: { start, end, text: m[0], reason: rule.reason, category: "other" } });
+  }
+  if (hits.length === 0) return result;
+
+  const top = hits.reduce((a, b) =>
+    LEVEL_RANK[b.rule.level] > LEVEL_RANK[a.rule.level] ||
+    (LEVEL_RANK[b.rule.level] === LEVEL_RANK[a.rule.level] && b.rule.score > a.rule.score) ? b : a).rule;
+
+  const current = String(analysis.risk_level ?? "low").toLowerCase();
+  if (LEVEL_RANK[top.level] > (LEVEL_RANK[current] ?? 0)) analysis.risk_level = top.level;
+  analysis.score = Math.max(parseFloat(analysis.score) || 0, top.score);
+  analysis.explanation = "Browser rule check: " + top.reason + " " + (analysis.explanation ?? "");
+  analysis.flags = [...(Array.isArray(analysis.flags) ? analysis.flags : []), ...hits.map((h) => h.flag)];
+  gate.status = "held_for_review";
+  gate.note = "Held for review. " + (gate.note ?? "");
+  result.browser_rule_check = hits.map((h) => h.rule.reason);
+  return result;
+}
 async function runShield(text) {
   if (!shieldFn) throw new Error("The Python engine is not ready.");
 
