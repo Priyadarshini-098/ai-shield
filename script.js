@@ -20,6 +20,14 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 // never pasted into Python source code.
 const PYTHON_GLUE = `
 import json
+import urllib.request, urllib.error
+
+ALLOW_LOCAL_AI = False   # set True only on your own PC, to let the page try Ollama
+
+if not ALLOW_LOCAL_AI:
+    def _no_network(*args, **kwargs):
+        raise urllib.error.URLError("Local AI is switched off in the browser version")
+    urllib.request.urlopen = _no_network
 import re
 import local_classifier, detector
 import combined_pipeline as cp
