@@ -22,7 +22,7 @@ const PYTHON_GLUE = `
 import json
 from combined_pipeline import run_shield
 
-def run_shield_json(text):
+def run_combined_shield_json(text):
     return json.dumps(run_shield(text), default=str)
 `;
 
