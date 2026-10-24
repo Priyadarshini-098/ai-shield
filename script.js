@@ -61,11 +61,15 @@ urllib.request.urlopen = _browser_urlopen if ALLOW_LOCAL_AI else _no_network
 _original_classify = local_classifier.classify_text
 _flags = []
 
+_state = {"error": None}
+
 def _browser_classify(text):
     _flags.clear()
+    _state["error"] = None
     try:
         return _original_classify(text)
-    except Exception:
+    except Exception as exc:
+        _state["error"] = str(exc.__cause__ or exc)
         r = detector.analyze(text)
         _flags.extend(r.get("flags", []))
         return {"risk_level": r["risk_level"], "score": r["score"],
@@ -79,6 +83,9 @@ def run_shield_json(text):
     r = cp.run_combined_shield(text)
     status = r.get("status", "held_for_review")
     analysis = dict(r.get("analysis") or {})
+    if _state["error"] and str((r.get("local_ai") or {}).get("method", "")) == "browser_rules":
+        r["browser_ai_error"] = _state["error"]
+        analysis["explanation"] = "[Ollama was not reached, so lighter browser rules were used] " + str(analysis.get("explanation", ""))
     rb = r.get("rule_based") or {}
     reasons = rb.get("reasons") or []
     if reasons:
@@ -460,7 +467,14 @@ async function scan() {
     state.lastResult = result;
     state.lastText = text;
     recordScan(result, text);
-    setEngine("success", "Python engine ready. Scan completed in your browser.");
+    const usedMethod = result.local_ai && result.local_ai.method;
+    if (usedMethod === "browser_rules") {
+      setEngine("warn",
+        "Ollama was NOT reached, so the lighter browser rules were used. Results can differ from running " +
+        "combined_pipeline.py on your PC. Reason: " + (result.browser_ai_error || "unknown") + ".");
+    } else {
+      setEngine("success", "Scan used your local AI (Ollama) through the real pipeline.");
+    }
   } catch (error) {
     console.error("AI Shield scan failed:", error);
     state.lastResult = null;
