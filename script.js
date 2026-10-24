@@ -298,7 +298,7 @@ async function runShield(text) {
   if (!isValidResult(result)) {
     throw new Error("The pipeline returned an unexpected result.");
   }
-  return result;
+    return applyBrowserRules(text, result);
 }
 
 // ------------------------------------------------------------
