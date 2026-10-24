@@ -20,10 +20,25 @@ const SCAN_LABEL = "🔍 Scan Prompt";
 // never pasted into Python source code.
 const PYTHON_GLUE = `
 import json
-from combined_pipeline import run_shield
+from combined_pipeline import run_combined_shield
 
-def run_combined_shield_json(text):
-    return json.dumps(run_shield(text), default=str)
+def run_shield_json(text):
+    r = run_combined_shield(text)
+    status = r.get("status", "held_for_review")
+    analysis = dict(r.get("analysis") or {})
+    reasons = (r.get("rule_based") or {}).get("reasons") or []
+    if reasons:
+        analysis["explanation"] = str(analysis.get("explanation", "")) + " Rule-based reasons: " + "; ".join(reasons)
+    analysis["method_full"] = analysis.get("method")
+    analysis["method"] = "combined"
+    analysis.setdefault("flags", [])
+    r["analysis"] = analysis
+    r["gate"] = {
+        "status": "allowed" if status == "allowed" else "held_for_review",
+        "note": r.get("note", ""),
+        "preview": r.get("preview", ""),
+    }
+    return json.dumps(r, default=str)
 `;
 
 // ------------------------------------------------------------
